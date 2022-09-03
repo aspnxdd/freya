@@ -45,8 +45,8 @@ use work_loop::work_loop;
 
 use crate::events_processor::EventsProcessor;
 
-type SkiaDom = Arc<Mutex<RealDom<NodeState>>>;
-type EventEmitter = Arc<Mutex<Option<UnboundedSender<SchedulerMsg>>>>;
+pub type SkiaDom = Arc<Mutex<RealDom<NodeState>>>;
+pub type EventEmitter = Arc<Mutex<Option<UnboundedSender<SchedulerMsg>>>>;
 type WindowedContext = glutin::ContextWrapper<glutin::PossiblyCurrent, glutin::window::Window>;
 pub type RendererRequests = Arc<Mutex<Vec<RendererRequest>>>;
 
@@ -63,10 +63,9 @@ pub enum RendererRequest {
     },
 }
 
-pub fn run(skia_dom: SkiaDom, rev_render: Receiver<()>, event_emitter: EventEmitter) {
+pub fn run(windows: Vec<(SkiaDom, EventEmitter)>, rev_render: Receiver<()>) {
     let renderer_requests: RendererRequests = Arc::new(Mutex::new(Vec::new()));
     let cursor_pos = Arc::new(Mutex::new((0.0, 0.0)));
-    let events_processor = EventsProcessor::default();
 
     let el = EventLoop::new();
 
@@ -108,61 +107,84 @@ pub fn run(skia_dom: SkiaDom, rev_render: Receiver<()>, event_emitter: EventEmit
 
     let wins = Arc::new(Mutex::new(vec![]));
 
-    let wb = WindowBuilder::new().with_title("test");
+   
 
-    let cb = glutin::ContextBuilder::new()
+    
+
+   
+   
+
+    for (i, win) in windows.iter().enumerate() {
+
+        let cb = glutin::ContextBuilder::new()
         .with_depth_buffer(0)
         .with_stencil_buffer(8)
         .with_pixel_format(24, 8)
         .with_gl_profile(GlProfile::Core);
 
-    #[cfg(not(feature = "wayland"))]
-    let cb = cb.with_double_buffer(Some(true));
+        #[cfg(not(feature = "wayland"))]
+        let cb = cb.with_double_buffer(Some(true));
 
-    let windowed_context = cb.build_windowed(wb, &el).unwrap();
+        let wb = WindowBuilder::new().with_title(format!("win: {i}"));
 
-    let windowed_context = unsafe { windowed_context.make_current().unwrap() };
-    let window_id = windowed_context.window().id();
+        
+    
+        let windowed_context = cb.clone().build_windowed(wb, &el).unwrap();
+    
+        let windowed_context = {
+            if i == 0 {
+                unsafe { 
+                    let windowed_context = windowed_context.make_current().unwrap();
+                    windowed_context.treat_as_current()
+                 }
+            } else {
+                unsafe { windowed_context.treat_as_current() }
+            }
+        };
+    
+        gl::load_with(|s| windowed_context.get_proc_address(s));
 
-    gl::load_with(|s| windowed_context.get_proc_address(s));
+        let fb_info = {
+            let mut fboid: GLint = (i as usize).try_into().unwrap();
+            unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
+    
+            FramebufferInfo {
+                fboid: fboid.try_into().unwrap(),
+                format: skia_safe::gpu::gl::Format::RGBA8.into(),
+            }
+        };
+    
+        let mut gr_context = skia_safe::gpu::DirectContext::new_gl(None, None).unwrap();
+        
+    
+        windowed_context
+            .window()
+            .set_inner_size(PhysicalSize::<u32>::new(300, 300));
+    
+        let mut surface = create_surface(&windowed_context, &fb_info, &mut gr_context);
+        let sf = windowed_context.window().scale_factor() as f32;
+        surface.canvas().scale((sf, sf));
+    
+        let style = FontStyle::new(Weight::NORMAL, Width::NORMAL, Slant::Upright);
+        let type_face = Typeface::new("Fira Sans", style).unwrap();
+        let font = Font::new(type_face, 16.0);
 
-    let fb_info = {
-        let mut fboid: GLint = 0;
-        unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut fboid) };
+        let events_processor = EventsProcessor::default();
 
-        FramebufferInfo {
-            fboid: fboid.try_into().unwrap(),
-            format: skia_safe::gpu::gl::Format::RGBA8.into(),
-        }
-    };
+        wins.lock().unwrap().push(Arc::new(Mutex::new(Env {
+            surface,
+            gr_context,
+            windowed_context,
+            fb_info,
+            skia_dom: win.0.clone(),
+            renderer_requests: renderer_requests.clone(),
+            event_emitter: win.1.clone(),
+            font,
+            events_processor,
+        })));
+    }
 
-    let mut gr_context = skia_safe::gpu::DirectContext::new_gl(None, None).unwrap();
-
-    windowed_context
-        .window()
-        .set_inner_size(PhysicalSize::<u32>::new(300, 300));
-
-    let mut surface = create_surface(&windowed_context, &fb_info, &mut gr_context);
-    let sf = windowed_context.window().scale_factor() as f32;
-    surface.canvas().scale((sf, sf));
-
-    let style = FontStyle::new(Weight::NORMAL, Width::NORMAL, Slant::Upright);
-    let type_face = Typeface::new("Fira Sans", style).unwrap();
-    let font = Font::new(type_face, 16.0);
-
-    let env = Env {
-        surface,
-        gr_context,
-        windowed_context,
-        fb_info,
-        skia_dom,
-        renderer_requests: renderer_requests.clone(),
-        event_emitter,
-        font,
-        events_processor,
-    };
-
-    wins.lock().unwrap().push(Arc::new(Mutex::new(env)));
+    
 
     fn create_surface(
         windowed_context: &WindowedContext,
@@ -200,15 +222,29 @@ pub fn run(skia_dom: SkiaDom, rev_render: Receiver<()>, event_emitter: EventEmit
         });
     }
 
-    let get_window_context = move |window_id: WindowId| -> Option<Arc<Mutex<Env>>> {
-        let mut win = None;
-        for env in &*wins.lock().unwrap() {
-            if env.lock().unwrap().windowed_context.window().id() == window_id {
-                win = Some(env.clone())
+    let get_window_context = {
+        let wins = wins.clone();
+        move |window_id: WindowId| -> Option<Arc<Mutex<Env>>> {
+            let mut win = None;
+            for env in &*wins.lock().unwrap() {
+                if env.lock().unwrap().windowed_context.window().id() == window_id {
+                    println!("{window_id:?} REDRAW");
+                    win = Some(env.clone())
+                }
             }
+    
+            win
+        }
+    };
+
+    let get_all_windows_contexts = move || -> Vec<Arc<Mutex<Env>>> {
+        let mut envs = Vec::new();
+        
+        for env in &*wins.lock().unwrap() {
+            envs.push(env.clone());
         }
 
-        win
+        envs
     };
 
     el.run(move |event, _, control_flow| {
@@ -348,11 +384,12 @@ pub fn run(skia_dom: SkiaDom, rev_render: Receiver<()>, event_emitter: EventEmit
                 }
             }
             Event::UserEvent(_) => {
-                let result = get_window_context(window_id);
-                if let Some(env) = result {
-                    let mut env = env.lock().unwrap();
-                    env.redraw();
+
+                for env in get_all_windows_contexts() {
+                    env.lock().unwrap().windowed_context.window().request_redraw();
                 }
+
+               
             }
             _ => (),
         }

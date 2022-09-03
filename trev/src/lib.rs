@@ -2,16 +2,21 @@ use anymap::AnyMap;
 use dioxus::prelude::*;
 use dioxus_core::SchedulerMsg;
 use dioxus_native_core::real_dom::RealDom;
-use renderer::run;
+use renderer::{run, SkiaDom, EventEmitter};
 use state::node::NodeState;
 use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc};
+use elements_namespace as dioxus_elements;
 
 pub use renderer;
 
-pub fn launch(app: Component<()>) {
+pub struct LaunchParams {
+    pub devtools: bool
+}
+
+fn create_win(root: Component<()>, trig_render: Sender<()>) -> (SkiaDom, EventEmitter){
     let rdom = Arc::new(Mutex::new(RealDom::<NodeState>::new()));
-    let (trig_render, rev_render) = mpsc::channel::<()>();
     let event_emitter: Arc<Mutex<Option<UnboundedSender<SchedulerMsg>>>> =
         Arc::new(Mutex::new(None));
 
@@ -19,7 +24,7 @@ pub fn launch(app: Component<()>) {
         let rdom = rdom.clone();
         let event_emitter = event_emitter.clone();
         std::thread::spawn(move || {
-            let mut dom = VirtualDom::new(app);
+            let mut dom = VirtualDom::new(root);
 
             let muts = dom.rebuild();
             let to_update = rdom.lock().unwrap().apply_mutations(vec![muts]);
@@ -52,5 +57,37 @@ pub fn launch(app: Component<()>) {
         });
     }
 
-    run(rdom, rev_render, event_emitter);
+    (rdom, event_emitter)
+}
+
+pub fn launch(app: Component<()>, params: Option<LaunchParams>) {
+
+    let (trig_render, rev_render) = mpsc::channel::<()>();
+    
+
+    let mut windows = vec![
+        create_win(app, trig_render.clone())
+    ];
+
+    if let Some(params) = params {
+        if params.devtools {
+            windows.push(create_win(devtools_app, trig_render))
+        }
+    }
+
+    run(windows, rev_render);
+}
+
+fn devtools_app(cx: Scope) -> Element {
+
+    cx.render(rsx!(
+        view {
+            background: "green",
+            width: "100%",
+            height: "100%",
+            text {
+                "hi"
+            }
+        }
+    ))
 }

@@ -1876,6 +1876,7 @@ dependencies = [
  "dioxus-core",
  "dioxus-html",
  "dioxus-native-core",
+ "elements-namespace",
  "fxhash",
  "layout-engine",
  "renderer",

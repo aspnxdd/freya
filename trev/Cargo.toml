@@ -18,3 +18,4 @@ dioxus-core = { git = "https://github.com/DioxusLabs/dioxus" }
 tokio = { version = "1.17.0", features = ["full"] }
 anymap = "0.12.1"
 fxhash = "0.2.1"
+elements-namespace = { path = "../elements-namespace"}

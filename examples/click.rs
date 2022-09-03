@@ -1,10 +1,12 @@
 use dioxus::prelude::*;
 use elements_namespace as dioxus_elements;
 
-use trev::launch;
+use trev::{launch, LaunchParams};
 
 fn main() {
-    launch(app);
+    launch(app, Some(LaunchParams {
+        devtools: true
+    }));
 }
 
 fn app(cx: Scope) -> Element {
